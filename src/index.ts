@@ -8,20 +8,22 @@ import { z } from "zod";
 import { HevyClient } from "./hevy.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
-const HEVY_API_KEY = process.env.HEVY_API_KEY;
-const CLAUDE_AUTH_TOKEN = process.env.CLAUDE_AUTH_TOKEN;
+const HEVY_API_KEY = process.env.HEVY_API_KEY?.trim();
+const CLAUDE_AUTH_TOKEN = process.env.CLAUDE_AUTH_TOKEN?.trim();
 
-if (!HEVY_API_KEY) {
-  console.error("Missing HEVY_API_KEY environment variable");
-  process.exit(1);
+function getConfigErrors(): string[] {
+  const errors: string[] = [];
+  if (!HEVY_API_KEY) errors.push("HEVY_API_KEY");
+  if (!CLAUDE_AUTH_TOKEN) errors.push("CLAUDE_AUTH_TOKEN");
+  return errors;
 }
 
-if (!CLAUDE_AUTH_TOKEN) {
-  console.error("Missing CLAUDE_AUTH_TOKEN environment variable");
-  process.exit(1);
+function getHevy(): HevyClient {
+  if (!HEVY_API_KEY) {
+    throw new Error("HEVY_API_KEY is not configured");
+  }
+  return new HevyClient(HEVY_API_KEY);
 }
-
-const hevy = new HevyClient(HEVY_API_KEY);
 
 let exerciseTemplatesCache: unknown | null = null;
 
@@ -31,7 +33,7 @@ function jsonResult(data: unknown) {
   };
 }
 
-function createMcpServer(): McpServer {
+function createMcpServer(hevy: HevyClient): McpServer {
   const server = new McpServer(
     {
       name: "hevy-mcp-remote",
@@ -123,6 +125,19 @@ function createMcpServer(): McpServer {
   return server;
 }
 
+function requireConfigured(req: Request, res: Response, next: NextFunction): void {
+  const missing = getConfigErrors();
+  if (missing.length > 0) {
+    res.status(503).json({
+      error: "Server not configured",
+      missing,
+      hint: "Add HEVY_API_KEY and CLAUDE_AUTH_TOKEN in Railway Variables, then redeploy.",
+    });
+    return;
+  }
+  next();
+}
+
 function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   const expected = `Bearer ${CLAUDE_AUTH_TOKEN}`;
@@ -143,13 +158,19 @@ const app = express();
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+  const missing = getConfigErrors();
+  res.json({
+    status: missing.length === 0 ? "ok" : "misconfigured",
+    port: PORT,
+    missing,
+  });
 });
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
 const mcpPostHandler = async (req: Request, res: Response) => {
   try {
+    const hevy = getHevy();
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     let transport: StreamableHTTPServerTransport;
 
@@ -171,7 +192,7 @@ const mcpPostHandler = async (req: Request, res: Response) => {
         }
       };
 
-      const server = createMcpServer();
+      const server = createMcpServer(hevy);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
       return;
@@ -204,14 +225,20 @@ const mcpPostHandler = async (req: Request, res: Response) => {
   }
 };
 
-app.post("/mcp", requireAuth, mcpPostHandler);
+app.post("/mcp", requireConfigured, requireAuth, mcpPostHandler);
 
-app.get("/mcp", requireAuth, (_req, res) => {
+app.get("/mcp", requireConfigured, requireAuth, (_req, res) => {
   res.status(405).set("Allow", "POST").send("Method Not Allowed");
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Hevy MCP server listening on port ${PORT}`);
+  const missing = getConfigErrors();
+  console.log(`Hevy MCP server listening on 0.0.0.0:${PORT} (PORT env=${process.env.PORT ?? "unset"})`);
+  if (missing.length > 0) {
+    console.warn(`Missing environment variables: ${missing.join(", ")}`);
+  } else {
+    console.log("Configuration OK");
+  }
 });
 
 process.on("SIGINT", () => process.exit(0));
