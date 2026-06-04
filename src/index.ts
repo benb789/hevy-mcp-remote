@@ -140,10 +140,19 @@ function requireConfigured(req: Request, res: Response, next: NextFunction): voi
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
+function tokenFromQuery(req: Request): string | undefined {
+  const q = req.query.auth ?? req.query.token;
+  return typeof q === "string" ? q : undefined;
+}
+
 function isAuthorized(req: Request): boolean {
   if (!CLAUDE_AUTH_TOKEN) return false;
 
-  // Claude often drops the token from the URL after the first request and uses /mcp + session id
+  // Query param survives Claude follow-up requests better than path segments
+  const queryToken = tokenFromQuery(req);
+  if (queryToken === CLAUDE_AUTH_TOKEN) return true;
+
+  // Claude often drops the path token and uses /mcp + session id (same Railway replica only)
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (sessionId && transports[sessionId]) return true;
 
