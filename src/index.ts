@@ -138,8 +138,14 @@ function requireConfigured(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
+const transports: Record<string, StreamableHTTPServerTransport> = {};
+
 function isAuthorized(req: Request): boolean {
   if (!CLAUDE_AUTH_TOKEN) return false;
+
+  // Claude often drops the token from the URL after the first request and uses /mcp + session id
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (sessionId && transports[sessionId]) return true;
 
   const header = req.headers.authorization;
   if (header === `Bearer ${CLAUDE_AUTH_TOKEN}`) return true;
@@ -152,6 +158,9 @@ function isAuthorized(req: Request): boolean {
 
 function requireAuth(req: Request, res: Response, next: NextFunction): void {
   if (!isAuthorized(req)) {
+    console.warn(
+      `Unauthorized MCP request: path=${req.path} hasSession=${Boolean(req.headers["mcp-session-id"])}`
+    );
     res.status(401).json({
       jsonrpc: "2.0",
       error: { code: -32001, message: "Unauthorized" },
@@ -174,8 +183,6 @@ app.get("/health", (_req, res) => {
     missing,
   });
 });
-
-const transports: Record<string, StreamableHTTPServerTransport> = {};
 
 const mcpPostHandler = async (req: Request, res: Response) => {
   try {
