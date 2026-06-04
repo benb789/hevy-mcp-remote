@@ -138,11 +138,20 @@ function requireConfigured(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
-function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const header = req.headers.authorization;
-  const expected = `Bearer ${CLAUDE_AUTH_TOKEN}`;
+function isAuthorized(req: Request): boolean {
+  if (!CLAUDE_AUTH_TOKEN) return false;
 
-  if (!header || header !== expected) {
+  const header = req.headers.authorization;
+  if (header === `Bearer ${CLAUDE_AUTH_TOKEN}`) return true;
+
+  const pathToken = req.params.authToken;
+  if (pathToken && pathToken === CLAUDE_AUTH_TOKEN) return true;
+
+  return false;
+}
+
+function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!isAuthorized(req)) {
     res.status(401).json({
       jsonrpc: "2.0",
       error: { code: -32001, message: "Unauthorized" },
@@ -225,11 +234,15 @@ const mcpPostHandler = async (req: Request, res: Response) => {
   }
 };
 
-app.post("/mcp", requireConfigured, requireAuth, mcpPostHandler);
-
-app.get("/mcp", requireConfigured, requireAuth, (_req, res) => {
-  res.status(405).set("Allow", "POST").send("Method Not Allowed");
-});
+// /mcp/:authToken — for Claude web/mobile (no Bearer field in connector UI)
+// /mcp — for clients that send Authorization: Bearer header
+const mcpRoutes = ["/mcp/:authToken", "/mcp"] as const;
+for (const route of mcpRoutes) {
+  app.post(route, requireConfigured, requireAuth, mcpPostHandler);
+  app.get(route, requireConfigured, requireAuth, (_req, res) => {
+    res.status(405).set("Allow", "POST").send("Method Not Allowed");
+  });
+}
 
 app.listen(PORT, "0.0.0.0", () => {
   const missing = getConfigErrors();
